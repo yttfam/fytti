@@ -1,0 +1,6 @@
+/target
+Cargo.lock
+.claude/
+test.swf
+# Keep test reference PNGs
+!/tests/references/*.png

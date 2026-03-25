@@ -1,0 +1,13 @@
+[package]
+name = "fytti-wasm"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+fytti-render.workspace = true
+wytti-host = { path = "../../wytti/wytti-host" }
+wytti-runtime = { path = "../../wytti/wytti-runtime" }
+wytti-sandbox = { path = "../../wytti/wytti-sandbox" }
+wasmtime = { version = "31", features = ["component-model"] }
+wasmtime-wasi = "31"
+anyhow = "1"

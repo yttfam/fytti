@@ -1,0 +1,11 @@
+[workspace]
+members = ["fytti-html", "fytti-css", "fytti-layout", "fytti-render", "fytti-wasm", "fytti-swf", "fytti-app"]
+resolver = "2"
+
+[workspace.dependencies]
+fytti-html = { path = "fytti-html" }
+fytti-css = { path = "fytti-css" }
+fytti-layout = { path = "fytti-layout" }
+fytti-render = { path = "fytti-render" }
+fytti-wasm = { path = "fytti-wasm" }
+fytti-swf = { path = "fytti-swf" }

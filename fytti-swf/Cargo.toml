@@ -1,0 +1,8 @@
+[package]
+name = "fytti-swf"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+fytti-render = { workspace = true }
+flate2 = "1"

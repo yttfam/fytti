@@ -1,0 +1,8 @@
+[package]
+name = "fytti-layout"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+fytti-html.workspace = true
+fytti-css.workspace = true
