@@ -133,6 +133,40 @@ impl Renderer {
         }
     }
 
+    /// Blit raw RGBA bitmap data onto the pixmap with nearest-neighbor scaling.
+    pub fn blit_bitmap_direct(&mut self, data: &[u8], src_w: u32, src_h: u32, x: f32, y: f32, w: f32, h: f32) {
+        let dx = x.max(0.0) as usize;
+        let dy = y.max(0.0) as usize;
+        let dw = w as usize;
+        let dh = h as usize;
+        let pw = self.pixmap.width() as usize;
+        let ph = self.pixmap.height() as usize;
+        let pixels = self.pixmap.data_mut();
+
+        for row in 0..dh {
+            let fy = dy + row;
+            if fy >= ph { break; }
+            let src_y = (row * src_h as usize / dh.max(1)).min(src_h as usize - 1);
+            for col in 0..dw {
+                let fx = dx + col;
+                if fx >= pw { break; }
+                let src_x = (col * src_w as usize / dw.max(1)).min(src_w as usize - 1);
+                let si = (src_y * src_w as usize + src_x) * 4;
+                let di = (fy * pw + fx) * 4;
+                if si + 3 < data.len() && di + 3 < pixels.len() {
+                    let sa = data[si + 3] as f32 / 255.0;
+                    if sa > 0.0 {
+                        let inv = 1.0 - sa;
+                        pixels[di] = (data[si] as f32 * sa + pixels[di] as f32 * inv) as u8;
+                        pixels[di+1] = (data[si+1] as f32 * sa + pixels[di+1] as f32 * inv) as u8;
+                        pixels[di+2] = (data[si+2] as f32 * sa + pixels[di+2] as f32 * inv) as u8;
+                        pixels[di+3] = 255;
+                    }
+                }
+            }
+        }
+    }
+
     /// Render a filled vector path directly onto the pixmap.
     pub fn fill_path_direct(&mut self, edges: &[crate::display_list::PathEdge], color: Color) {
         let mut paint = Paint::default();

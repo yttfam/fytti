@@ -34,6 +34,7 @@ impl SwfPlayer {
         for (i, tag) in swf.tags.iter().enumerate() {
             match tag {
                 Tag::DefineShape(shape) => { characters.insert(shape.id, i); }
+                Tag::DefineBitmap(bmp) => { characters.insert(bmp.id, i); }
                 Tag::DefineSprite(sprite) => { characters.insert(sprite.id, i); }
                 Tag::DefineText(text) => { characters.insert(text.id, i); }
                 _ => {}
@@ -122,6 +123,20 @@ impl SwfPlayer {
                 match &self.swf.tags[tag_idx] {
                     Tag::DefineShape(shape) => {
                         self.render_shape(shape, &entry.matrix, sx, sy, &mut dl);
+                    }
+                    Tag::DefineBitmap(bmp) => {
+                        let (tx, ty) = entry.matrix.transform(0.0, 0.0);
+                        let bw = bmp.width as f32 * entry.matrix.a;
+                        let bh = bmp.height as f32 * entry.matrix.d;
+                        dl.commands.push(DrawCmd::BitmapRaw {
+                            data: bmp.data.clone(),
+                            src_width: bmp.width,
+                            src_height: bmp.height,
+                            x: tx * sx,
+                            y: ty * sy,
+                            w: bw.abs() * sx,
+                            h: bh.abs() * sy,
+                        });
                     }
                     Tag::DefineSprite(sprite) => {
                         self.render_sprite(sprite, &entry.matrix, sx, sy, &mut dl);
@@ -276,27 +291,46 @@ impl SwfPlayer {
 
             // Emit filled path
             if let Some(fill_style) = fill {
-                let color = match fill_style {
-                    FillStyle::Solid(c) => c.to_f32(),
-                    FillStyle::LinearGradient { colors, .. } => {
-                        // Use midpoint color as approximation for path fill
-                        if colors.len() >= 2 {
-                            let mid = colors.len() / 2;
-                            colors[mid].1.to_f32()
-                        } else {
-                            colors.first().map(|(_, c)| c.to_f32()).unwrap_or([1.0; 4])
+                match fill_style {
+                    FillStyle::Bitmap { character_id, .. } => {
+                        // Look up bitmap and draw it within the path bounds
+                        if let Some(&tag_idx) = self.characters.get(character_id) {
+                            if let Tag::DefineBitmap(bmp) = &self.swf.tags[tag_idx] {
+                                dl.commands.push(DrawCmd::BitmapRaw {
+                                    data: bmp.data.clone(),
+                                    src_width: bmp.width,
+                                    src_height: bmp.height,
+                                    x: min_x,
+                                    y: min_y,
+                                    w,
+                                    h,
+                                });
+                            }
                         }
                     }
-                    FillStyle::RadialGradient { colors, .. } => {
-                        colors.first().map(|(_, c)| c.to_f32()).unwrap_or([1.0; 4])
+                    _ => {
+                        let color = match fill_style {
+                            FillStyle::Solid(c) => c.to_f32(),
+                            FillStyle::LinearGradient { colors, .. } => {
+                                if colors.len() >= 2 {
+                                    let mid = colors.len() / 2;
+                                    colors[mid].1.to_f32()
+                                } else {
+                                    colors.first().map(|(_, c)| c.to_f32()).unwrap_or([1.0; 4])
+                                }
+                            }
+                            FillStyle::RadialGradient { colors, .. } => {
+                                colors.first().map(|(_, c)| c.to_f32()).unwrap_or([1.0; 4])
+                            }
+                            FillStyle::Bitmap { .. } => unreachable!(),
+                        };
+                        dl.commands.push(DrawCmd::FillPath {
+                            edges: edges.clone(),
+                            color,
+                            bounds: [min_x, min_y, w, h],
+                        });
                     }
-                };
-
-                dl.commands.push(DrawCmd::FillPath {
-                    edges: edges.clone(),
-                    color,
-                    bounds: [min_x, min_y, w, h],
-                });
+                }
             }
 
             // Emit stroked path

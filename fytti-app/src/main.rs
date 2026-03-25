@@ -124,6 +124,9 @@ fn main() {
                             (color[2] * 255.0) as u8, (color[3] * 255.0) as u8,
                         ));
                     }
+                    fytti_render::display_list::DrawCmd::BitmapRaw { data, src_width, src_height, x, y, w, h } => {
+                        renderer.blit_bitmap_direct(data, *src_width, *src_height, *x, *y, *w, *h);
+                    }
                     _ => {}
                 }
             }
@@ -163,6 +166,8 @@ fn main() {
         gpu: None,
         wasm_app: None,
         swf_player: None,
+        swf_frame_interval: std::time::Duration::from_millis(33), // default 30fps
+        swf_last_frame: Instant::now(),
         fps: FpsCounter::new(),
         win_width: width,
         win_height: height,
@@ -208,6 +213,8 @@ struct App {
     gpu: Option<GpuRenderer>,
     wasm_app: Option<fytti_wasm::WasmApp>,
     swf_player: Option<fytti_swf::render::SwfPlayer>,
+    swf_frame_interval: std::time::Duration,
+    swf_last_frame: Instant,
     fps: FpsCounter,
     win_width: u32,
     win_height: u32,
@@ -258,8 +265,14 @@ impl App {
         let width = size.width.max(1);
         let height = size.height.max(1);
 
+        // Only advance timeline at the SWF's native frame rate
+        let now = Instant::now();
+        if now.duration_since(self.swf_last_frame) >= self.swf_frame_interval {
+            player.advance_frame();
+            self.swf_last_frame = now;
+        }
+
         let dl = player.render(width, height);
-        player.advance_frame(); // advance timeline
 
         let gpu = match self.gpu.as_mut() {
             Some(g) => g,
@@ -271,7 +284,8 @@ impl App {
         self.fps.tick();
         let fps_text = self.fps.fps_string();
         if let Some(w) = self.window.as_ref() {
-            w.set_title(&format!("Fytti SWF — {fps_text}"));
+            w.set_title(&format!("Fytti SWF — frame {}/{} — {fps_text}",
+                player.frame, player.swf.header.frame_count));
         }
 
         // Keep animating if multi-frame
@@ -369,6 +383,8 @@ impl ApplicationHandler for App {
                     swf.header.frame_width, swf.header.frame_height,
                     swf.header.frame_rate, swf.header.frame_count,
                 );
+                let fps = swf.header.frame_rate.max(1.0);
+                self.swf_frame_interval = std::time::Duration::from_secs_f32(1.0 / fps);
                 self.swf_player = Some(fytti_swf::render::SwfPlayer::new(swf));
             }
         }

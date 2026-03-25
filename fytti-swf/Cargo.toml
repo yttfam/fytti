@@ -6,3 +6,4 @@ edition = "2021"
 [dependencies]
 fytti-render = { workspace = true }
 flate2 = "1"
+image = { version = "0.25", default-features = false, features = ["jpeg"] }

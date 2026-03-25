@@ -615,8 +615,12 @@ impl GpuRenderer {
                     ));
                 }
                 DrawCmd::FillPath { edges, color, bounds } => {
-                    has_text = true; // reuse text overlay for path rasterization
+                    has_text = true;
                     self.rasterize_path(edges, *color, *bounds);
+                }
+                DrawCmd::BitmapRaw { data, src_width, src_height, x, y, w, h } => {
+                    has_text = true;
+                    self.blit_bitmap(data, *src_width, *src_height, *x, *y, *w, *h);
                 }
                 DrawCmd::Image { .. } => {
                     // TODO: positioned textured quad
@@ -850,6 +854,39 @@ impl GpuRenderer {
         }
 
         self.text_shape_cache.insert(h, new_instances);
+    }
+
+    /// Blit a raw RGBA bitmap onto the text overlay pixmap (with nearest-neighbor scaling).
+    fn blit_bitmap(&mut self, data: &[u8], src_w: u32, src_h: u32, x: f32, y: f32, w: f32, h: f32) {
+        let dx = x.max(0.0) as usize;
+        let dy = y.max(0.0) as usize;
+        let dw = w as usize;
+        let dh = h as usize;
+        let pw = self.width as usize;
+        let ph = self.height as usize;
+
+        for row in 0..dh {
+            let fy = dy + row;
+            if fy >= ph { break; }
+            let src_y = (row * src_h as usize / dh).min(src_h as usize - 1);
+            for col in 0..dw {
+                let fx = dx + col;
+                if fx >= pw { break; }
+                let src_x = (col * src_w as usize / dw).min(src_w as usize - 1);
+                let si = (src_y * src_w as usize + src_x) * 4;
+                let di = (fy * pw + fx) * 4;
+                if si + 3 < data.len() && di + 3 < self.text_pixels.len() {
+                    let sa = data[si + 3] as f32 / 255.0;
+                    if sa > 0.0 {
+                        let inv = 1.0 - sa;
+                        self.text_pixels[di] = (data[si] as f32 * sa + self.text_pixels[di] as f32 * inv) as u8;
+                        self.text_pixels[di+1] = (data[si+1] as f32 * sa + self.text_pixels[di+1] as f32 * inv) as u8;
+                        self.text_pixels[di+2] = (data[si+2] as f32 * sa + self.text_pixels[di+2] as f32 * inv) as u8;
+                        self.text_pixels[di+3] = ((sa * 255.0) + self.text_pixels[di+3] as f32 * inv).min(255.0) as u8;
+                    }
+                }
+            }
+        }
     }
 
     /// Rasterize a filled vector path onto the text overlay pixmap.

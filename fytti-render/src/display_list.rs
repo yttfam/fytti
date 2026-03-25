@@ -32,6 +32,16 @@ pub enum DrawCmd {
         w: f32,
         h: f32,
     },
+    /// Draw raw RGBA bitmap data at a position.
+    BitmapRaw {
+        data: Vec<u8>,
+        src_width: u32,
+        src_height: u32,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+    },
     /// Fill an ellipse (circle if rx == ry).
     FillEllipse {
         cx: f32,
@@ -167,6 +177,15 @@ impl DisplayList {
                     h ^= y.to_bits() as u64; h = h.wrapping_mul(prime);
                     h ^= w.to_bits() as u64; h = h.wrapping_mul(prime);
                     h ^= ih.to_bits() as u64; h = h.wrapping_mul(prime);
+                }
+                DrawCmd::BitmapRaw { src_width, src_height, x, y, w, h: bh, .. } => {
+                    h ^= 10;
+                    h ^= *src_width as u64; h = h.wrapping_mul(prime);
+                    h ^= *src_height as u64; h = h.wrapping_mul(prime);
+                    h ^= x.to_bits() as u64; h = h.wrapping_mul(prime);
+                    h ^= y.to_bits() as u64; h = h.wrapping_mul(prime);
+                    h ^= w.to_bits() as u64; h = h.wrapping_mul(prime);
+                    h ^= bh.to_bits() as u64; h = h.wrapping_mul(prime);
                 }
                 DrawCmd::FillPath { edges, color, bounds } => {
                     h ^= 9;

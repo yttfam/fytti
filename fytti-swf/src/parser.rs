@@ -1,5 +1,5 @@
 use crate::types::*;
-use std::io::{self, Read};
+use std::io::Read;
 
 /// Parse a SWF file from bytes.
 pub fn parse_swf(data: &[u8]) -> Result<Swf, String> {
@@ -246,6 +246,26 @@ impl<'a> BitReader<'a> {
                     }
                 }
             }
+            6 | 21 | 35 => {
+                // DefineBitsJPEG / DefineBitsJPEG2 / DefineBitsJPEG3
+                match self.parse_define_bits_jpeg(tag_code, length, start_pos) {
+                    Ok(bmp) => Tag::DefineBitmap(bmp),
+                    Err(_) => {
+                        self.pos = start_pos + length;
+                        Tag::Unknown { tag_code, length }
+                    }
+                }
+            }
+            20 | 36 => {
+                // DefineBitsLossless / DefineBitsLossless2
+                match self.parse_define_bits_lossless(tag_code, length, start_pos) {
+                    Ok(bmp) => Tag::DefineBitmap(bmp),
+                    Err(_) => {
+                        self.pos = start_pos + length;
+                        Tag::Unknown { tag_code, length }
+                    }
+                }
+            }
             39 => {
                 // DefineSprite — MovieClip with nested timeline
                 match self.parse_define_sprite(version) {
@@ -280,6 +300,165 @@ impl<'a> BitReader<'a> {
         }
 
         Ok(tag)
+    }
+
+    fn parse_define_bits_jpeg(
+        &mut self,
+        tag_code: u16,
+        length: usize,
+        start_pos: usize,
+    ) -> Result<DefineBitmap, String> {
+        let id = self.read_u16()?;
+
+        let alpha_offset = if tag_code == 35 {
+            // DefineBitsJPEG3: has alpha data offset
+            Some(self.read_u32()? as usize)
+        } else {
+            None
+        };
+
+        let jpeg_start = self.pos;
+        let jpeg_len = if let Some(ao) = alpha_offset {
+            ao
+        } else {
+            length - (self.pos - start_pos)
+        };
+
+        // Read JPEG data — skip erroneous header bytes if present
+        let mut jpeg_data = self.data[jpeg_start..jpeg_start + jpeg_len].to_vec();
+        // SWF sometimes prepends FF D9 FF D8 (EOI + SOI) — strip it
+        if jpeg_data.len() > 4 && jpeg_data[0] == 0xFF && jpeg_data[1] == 0xD9 {
+            jpeg_data = jpeg_data[2..].to_vec();
+        }
+        self.pos = jpeg_start + jpeg_len;
+
+        // Decode JPEG
+        let img = image::load_from_memory_with_format(&jpeg_data, image::ImageFormat::Jpeg)
+            .map_err(|e| format!("JPEG decode: {e}"))?;
+        let rgba = img.to_rgba8();
+        let (w, h) = rgba.dimensions();
+        let mut pixels = rgba.into_raw();
+
+        // Apply alpha channel for DefineBitsJPEG3
+        if tag_code == 35 {
+            let alpha_len = length - (self.pos - start_pos);
+            let alpha_compressed = &self.data[self.pos..self.pos + alpha_len];
+            self.pos += alpha_len;
+
+            let mut alpha = Vec::new();
+            let mut decoder = flate2::read::ZlibDecoder::new(alpha_compressed);
+            let _ = decoder.read_to_end(&mut alpha);
+
+            // Apply alpha to each pixel
+            for (i, &a) in alpha.iter().enumerate() {
+                let idx = i * 4 + 3;
+                if idx < pixels.len() {
+                    pixels[idx] = a;
+                }
+            }
+        }
+
+        Ok(DefineBitmap { id, width: w, height: h, data: pixels })
+    }
+
+    fn parse_define_bits_lossless(
+        &mut self,
+        tag_code: u16,
+        length: usize,
+        start_pos: usize,
+    ) -> Result<DefineBitmap, String> {
+        let has_alpha = tag_code == 36;
+        let id = self.read_u16()?;
+        let format = self.read_u8()?;
+        let width = self.read_u16()? as u32;
+        let height = self.read_u16()? as u32;
+
+        let color_table_size = if format == 3 {
+            self.read_u8()? as usize + 1
+        } else {
+            0
+        };
+
+        // Rest is zlib-compressed pixel data
+        let compressed_len = length - (self.pos - start_pos);
+        let compressed = &self.data[self.pos..self.pos + compressed_len];
+        self.pos += compressed_len;
+
+        let mut decompressed = Vec::new();
+        let mut decoder = flate2::read::ZlibDecoder::new(compressed);
+        decoder.read_to_end(&mut decompressed).map_err(|e| format!("zlib: {e}"))?;
+
+        let mut pixels = vec![0u8; (width * height * 4) as usize];
+
+        match format {
+            3 => {
+                // Colormapped: color table + 1-byte-per-pixel indices
+                let entry_size = if has_alpha { 4 } else { 3 };
+                let table_bytes = color_table_size * entry_size;
+                if decompressed.len() < table_bytes {
+                    return Err("lossless: data too short for color table".into());
+                }
+                let (table, indices) = decompressed.split_at(table_bytes);
+
+                // Rows are padded to 4-byte boundaries
+                let row_stride = ((width as usize + 3) / 4) * 4;
+                for y in 0..height as usize {
+                    for x in 0..width as usize {
+                        let idx = indices.get(y * row_stride + x).copied().unwrap_or(0) as usize;
+                        let dst = (y * width as usize + x) * 4;
+                        if idx < color_table_size && dst + 3 < pixels.len() {
+                            let src = idx * entry_size;
+                            pixels[dst] = table.get(src).copied().unwrap_or(0);
+                            pixels[dst + 1] = table.get(src + 1).copied().unwrap_or(0);
+                            pixels[dst + 2] = table.get(src + 2).copied().unwrap_or(0);
+                            pixels[dst + 3] = if has_alpha {
+                                table.get(src + 3).copied().unwrap_or(255)
+                            } else {
+                                255
+                            };
+                        }
+                    }
+                }
+            }
+            4 => {
+                // 15-bit RGB (rare)
+                return Err("lossless: 15-bit format not supported".into());
+            }
+            5 => {
+                // 24-bit RGB (tag 20) or 32-bit ARGB (tag 36)
+                if has_alpha {
+                    // ARGB premultiplied
+                    for i in 0..(width * height) as usize {
+                        let si = i * 4;
+                        let di = i * 4;
+                        if si + 3 < decompressed.len() && di + 3 < pixels.len() {
+                            let a = decompressed[si];
+                            pixels[di] = decompressed[si + 1]; // R
+                            pixels[di + 1] = decompressed[si + 2]; // G
+                            pixels[di + 2] = decompressed[si + 3]; // B
+                            pixels[di + 3] = a;
+                        }
+                    }
+                } else {
+                    // 0RGB (pad byte + RGB)
+                    for i in 0..(width * height) as usize {
+                        let si = i * 4;
+                        let di = i * 4;
+                        if si + 3 < decompressed.len() && di + 3 < pixels.len() {
+                            pixels[di] = decompressed[si + 1];
+                            pixels[di + 1] = decompressed[si + 2];
+                            pixels[di + 2] = decompressed[si + 3];
+                            pixels[di + 3] = 255;
+                        }
+                    }
+                }
+            }
+            _ => {
+                return Err(format!("lossless: unknown format {format}"));
+            }
+        }
+
+        Ok(DefineBitmap { id, width, height, data: pixels })
     }
 
     fn parse_define_sprite(&mut self, version: u8) -> Result<DefineSprite, String> {
@@ -330,8 +509,30 @@ impl<'a> BitReader<'a> {
                         fill_styles.push(FillStyle::RadialGradient { matrix, colors });
                     }
                 }
+                0x40 | 0x41 | 0x42 | 0x43 => {
+                    // Bitmap fill
+                    let character_id = self.read_u16()?;
+                    let matrix = self.read_matrix()?;
+                    let repeating = fill_type == 0x40 || fill_type == 0x42;
+                    let smoothed = fill_type == 0x42 || fill_type == 0x43;
+                    fill_styles.push(FillStyle::Bitmap {
+                        character_id, matrix, repeating, smoothed,
+                    });
+                }
+                0x13 => {
+                    // Focal radial gradient — parse like radial + extra focal point
+                    let matrix = self.read_matrix()?;
+                    let num_stops = self.read_u8()? as usize;
+                    let mut colors = Vec::with_capacity(num_stops);
+                    for _ in 0..num_stops {
+                        let ratio = self.read_u8()?;
+                        let color = if rgba { self.read_rgba()? } else { self.read_rgb()? };
+                        colors.push((ratio, color));
+                    }
+                    let _focal_point = self.read_i16()?; // fixed 8.8
+                    fill_styles.push(FillStyle::RadialGradient { matrix, colors });
+                }
                 _ => {
-                    // Bitmap fills, focal gradients — skip
                     return Err(format!("unsupported fill type: {fill_type:#x}"));
                 }
             }

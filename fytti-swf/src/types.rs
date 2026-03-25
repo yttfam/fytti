@@ -21,6 +21,7 @@ pub struct Swf {
 pub enum Tag {
     SetBackgroundColor(Color),
     DefineShape(DefineShape),
+    DefineBitmap(DefineBitmap),
     DefineSprite(DefineSprite),
     PlaceObject(PlaceObject),
     RemoveObject { depth: u16 },
@@ -28,6 +29,15 @@ pub enum Tag {
     DefineText(DefineText),
     End,
     Unknown { tag_code: u16, length: usize },
+}
+
+/// An embedded bitmap image.
+#[derive(Debug, Clone)]
+pub struct DefineBitmap {
+    pub id: u16,
+    pub width: u32,
+    pub height: u32,
+    pub data: Vec<u8>, // decoded RGBA pixels
 }
 
 /// DefineSprite — a MovieClip with its own nested timeline.
@@ -96,11 +106,17 @@ pub enum FillStyle {
     Solid(Color),
     LinearGradient {
         matrix: Matrix,
-        colors: Vec<(u8, Color)>, // (ratio 0-255, color)
+        colors: Vec<(u8, Color)>,
     },
     RadialGradient {
         matrix: Matrix,
         colors: Vec<(u8, Color)>,
+    },
+    Bitmap {
+        character_id: u16,
+        matrix: Matrix,
+        repeating: bool,
+        smoothed: bool,
     },
 }
 
