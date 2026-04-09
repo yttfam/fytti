@@ -83,57 +83,6 @@ fn main() {
             eprintln!("Headless WASM rendering not yet supported");
             std::process::exit(1);
         }
-        if input.ends_with(".swf") {
-            let data = std::fs::read(&input).expect("Failed to read SWF");
-            let dl = fytti_swf::swf_to_display_list(&data, width, height)
-                .expect("SWF parse failed");
-            eprintln!("SWF: {} draw commands", dl.commands.len());
-            // Render display list to software pixmap
-            let mut renderer = Renderer::new(width, height);
-            let bg = dl.clear_color;
-            renderer.clear(fytti_css::Color::rgba(
-                (bg[0] * 255.0) as u8, (bg[1] * 255.0) as u8,
-                (bg[2] * 255.0) as u8, (bg[3] * 255.0) as u8,
-            ));
-            for cmd in &dl.commands {
-                match cmd {
-                    fytti_render::display_list::DrawCmd::FillRect { x, y, w, h, color } => {
-                        renderer.fill_rect_direct(
-                            fytti_layout::Rect { x: *x, y: *y, width: *w, height: *h },
-                            fytti_css::Color::rgba(
-                                (color[0] * 255.0) as u8, (color[1] * 255.0) as u8,
-                                (color[2] * 255.0) as u8, (color[3] * 255.0) as u8,
-                            ),
-                        );
-                    }
-                    fytti_render::display_list::DrawCmd::FillEllipse { cx, cy, rx, ry, color } => {
-                        renderer.fill_ellipse(*cx, *cy, *rx, *ry, fytti_css::Color::rgba(
-                            (color[0] * 255.0) as u8, (color[1] * 255.0) as u8,
-                            (color[2] * 255.0) as u8, (color[3] * 255.0) as u8,
-                        ));
-                    }
-                    fytti_render::display_list::DrawCmd::Text { text, x, y, size, color } => {
-                        renderer.draw_text_direct(text, *x, *y, *size, fytti_css::Color::rgba(
-                            (color[0] * 255.0) as u8, (color[1] * 255.0) as u8,
-                            (color[2] * 255.0) as u8, (color[3] * 255.0) as u8,
-                        ));
-                    }
-                    fytti_render::display_list::DrawCmd::FillPath { edges, color, .. } => {
-                        renderer.fill_path_direct(edges, fytti_css::Color::rgba(
-                            (color[0] * 255.0) as u8, (color[1] * 255.0) as u8,
-                            (color[2] * 255.0) as u8, (color[3] * 255.0) as u8,
-                        ));
-                    }
-                    fytti_render::display_list::DrawCmd::BitmapRaw { data, src_width, src_height, x, y, w, h } => {
-                        renderer.blit_bitmap_direct(data, *src_width, *src_height, *x, *y, *w, *h);
-                    }
-                    _ => {}
-                }
-            }
-            renderer.save_png(out_path).expect("save PNG failed");
-            eprintln!("Saved {width}x{height} → {out_path}");
-            return;
-        }
         let html = load_html(&input);
         let renderer = render_html_headless(&html, width, height);
         renderer.save_png(out_path).expect("save PNG failed");
@@ -145,15 +94,11 @@ fn main() {
     let app_name = input.clone();
     let mode = if input.ends_with(".wasm") {
         Mode::Wasm(input)
-    } else if input.ends_with(".swf") {
-        let data = std::fs::read(&input)
-            .unwrap_or_else(|e| panic!("Failed to read {input}: {e}"));
-        Mode::Swf(data)
     } else {
         Mode::Html(load_html(&input))
     };
 
-    // Announce to Hermytt registry (fire-and-forget, fails silently if Hermytt isn't running)
+    // Announce to Hermytt registry
     let token = std::env::var("HERMYTT_KEY").unwrap_or_default();
     let _registry = registry::start(&token, &[app_name]);
 
@@ -165,9 +110,6 @@ fn main() {
         sw_renderer: None,
         gpu: None,
         wasm_app: None,
-        swf_player: None,
-        swf_frame_interval: std::time::Duration::from_millis(33), // default 30fps
-        swf_last_frame: Instant::now(),
         fps: FpsCounter::new(),
         win_width: width,
         win_height: height,
@@ -178,7 +120,6 @@ fn main() {
 enum Mode {
     Html(String),
     Wasm(String),
-    Swf(Vec<u8>),
 }
 
 struct FpsCounter {
@@ -212,9 +153,6 @@ struct App {
     sw_renderer: Option<Renderer>,
     gpu: Option<GpuRenderer>,
     wasm_app: Option<fytti_wasm::WasmApp>,
-    swf_player: Option<fytti_swf::render::SwfPlayer>,
-    swf_frame_interval: std::time::Duration,
-    swf_last_frame: Instant,
     fps: FpsCounter,
     win_width: u32,
     win_height: u32,
@@ -255,47 +193,6 @@ impl App {
         }
     }
 
-    fn render_swf_frame(&mut self) {
-        let player = match self.swf_player.as_mut() {
-            Some(p) => p,
-            None => return,
-        };
-
-        let size = self.window.as_ref().unwrap().inner_size();
-        let width = size.width.max(1);
-        let height = size.height.max(1);
-
-        // Only advance timeline at the SWF's native frame rate
-        let now = Instant::now();
-        if now.duration_since(self.swf_last_frame) >= self.swf_frame_interval {
-            player.advance_frame();
-            self.swf_last_frame = now;
-        }
-
-        let dl = player.render(width, height);
-
-        let gpu = match self.gpu.as_mut() {
-            Some(g) => g,
-            None => return,
-        };
-        gpu.resize(width, height);
-        gpu.render(&dl);
-
-        self.fps.tick();
-        let fps_text = self.fps.fps_string();
-        if let Some(w) = self.window.as_ref() {
-            w.set_title(&format!("Fytti SWF — frame {}/{} — {fps_text}",
-                player.frame, player.swf.header.frame_count));
-        }
-
-        // Keep animating if multi-frame
-        if player.swf.header.frame_count > 1 {
-            if let Some(w) = self.window.as_ref() {
-                w.request_redraw();
-            }
-        }
-    }
-
     fn render_wasm_frame(&mut self) {
         let wasm = match self.wasm_app.as_mut() {
             Some(w) => w,
@@ -332,7 +229,6 @@ impl App {
             w.set_title(&format!("{base_title} — {fps_text}"));
         }
 
-        // Only keep spinning if the scene is actually changing
         if wants_more && rendered {
             if let Some(w) = self.window.as_ref() {
                 w.request_redraw();
@@ -373,20 +269,6 @@ impl ApplicationHandler for App {
                     .expect("WASM load failed");
                 self.wasm_app = Some(wasm_app);
             }
-            Mode::Swf(ref data) => {
-                let gpu = pollster::block_on(GpuRenderer::new(window.clone()));
-                self.gpu = Some(gpu);
-
-                let swf = fytti_swf::parse_swf(data).expect("SWF parse failed");
-                eprintln!(
-                    "SWF: {}x{} @ {}fps, {} frames",
-                    swf.header.frame_width, swf.header.frame_height,
-                    swf.header.frame_rate, swf.header.frame_count,
-                );
-                let fps = swf.header.frame_rate.max(1.0);
-                self.swf_frame_interval = std::time::Duration::from_secs_f32(1.0 / fps);
-                self.swf_player = Some(fytti_swf::render::SwfPlayer::new(swf));
-            }
         }
 
         self.window = Some(window.clone());
@@ -403,7 +285,6 @@ impl ApplicationHandler for App {
         if let Some(ref mut wasm) = self.wasm_app {
             if let Some(input_event) = input::convert_event(&event) {
                 wasm.push_event(input_event);
-                // Wake up — guest might need to handle this event
                 if let Some(w) = self.window.as_ref() {
                     w.request_redraw();
                 }
@@ -418,7 +299,6 @@ impl ApplicationHandler for App {
                     self.render_html(&html);
                 }
                 Mode::Wasm(_) => self.render_wasm_frame(),
-                Mode::Swf(_) => self.render_swf_frame(),
             },
             WindowEvent::Resized(_) => {
                 if let Some(w) = self.window.as_ref() {

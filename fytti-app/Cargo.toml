@@ -9,7 +9,6 @@ fytti-css.workspace = true
 fytti-layout.workspace = true
 fytti-render.workspace = true
 fytti-wasm.workspace = true
-fytti-swf.workspace = true
 wytti-host = { path = "../../wytti/wytti-host" }
 winit = "0.30"
 pollster = "0.4"

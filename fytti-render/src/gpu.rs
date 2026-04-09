@@ -490,14 +490,6 @@ impl GpuRenderer {
         self.image_textures.insert(image_id, (texture, bind_group));
     }
 
-    /// Load an image from a file path (PNG, JPEG, WebP).
-    pub fn load_image_file(&mut self, image_id: u32, path: &str) -> Result<(), String> {
-        let img = image::open(path).map_err(|e| format!("Failed to load image {path}: {e}"))?;
-        let rgba = img.to_rgba8();
-        let (w, h) = rgba.dimensions();
-        self.load_image_rgba(image_id, &rgba, w, h);
-        Ok(())
-    }
 
     pub fn resize(&mut self, width: u32, height: u32) {
         let w = width.max(1);
